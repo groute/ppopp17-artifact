@@ -1,0 +1,9 @@
+[submodule "code/mgbench"]
+	path = code/mgbench
+	url = https://github.com/tbennun/mgbench.git
+[submodule "code/groute"]
+	path = code/groute
+	url = https://github.com/groute/groute.git
+[submodule "code/nccl"]
+	path = code/nccl
+	url = https://github.com/NVIDIA/nccl.git

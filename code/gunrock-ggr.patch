@@ -1,0 +1,348 @@
+diff --git a/gunrock/app/enactor_base.cuh b/gunrock/app/enactor_base.cuh
+index 3679f28..9dbe903 100644
+--- a/gunrock/app/enactor_base.cuh
++++ b/gunrock/app/enactor_base.cuh
+@@ -665,6 +665,31 @@ public:
+                 return 1;
+             }
+         }
++        else if (graph_type == "galoisgr")  // Galois GR format
++        {
++            if (!args.CheckCmdLineFlag("quiet"))
++            {
++                printf("Loading Galois GR Binary CSR graph ...\n");
++            }
++            char *ggr_filename = args.GetCmdLineArgvDataset();
++            if (ggr_filename == NULL)
++            {
++                fprintf(stderr, "Input graph not specified.\n");
++                return 1;
++            }
++            boost::filesystem::path ggr_filename_path(ggr_filename);
++            file_stem = ggr_filename_path.stem().string();
++            info["dataset"] = file_stem;
++            if (graphio::BuildGaloisGraph<EDGE_VALUE>(
++                        ggr_filename,
++                        csr_ref,
++                        info["undirected"].get_bool(),
++                        INVERSE_GRAPH,
++                        args.CheckCmdLineFlag("quiet")) != 0)
++            {
++                return 1;
++            }
++        }
+         else if (graph_type == "rmat")  // R-MAT graph
+         {
+             if (!args.CheckCmdLineFlag("quiet"))
+diff --git a/gunrock/app/problem_base.cuh b/gunrock/app/problem_base.cuh
+index 179876a..2fd0cd7 100644
+--- a/gunrock/app/problem_base.cuh
++++ b/gunrock/app/problem_base.cuh
+@@ -19,6 +19,7 @@
+ 
+ // Graph construction utilities
+ #include <gunrock/graphio/market.cuh>
++#include <gunrock/graphio/galoisgr.cuh>
+ #include <gunrock/graphio/rmat.cuh>
+ #include <gunrock/graphio/rgg.cuh>
+ 
+diff --git a/gunrock/graphio/galoisgr.cuh b/gunrock/graphio/galoisgr.cuh
+new file mode 100644
+index 0000000..996be3a
+--- /dev/null
++++ b/gunrock/graphio/galoisgr.cuh
+@@ -0,0 +1,294 @@
++/* -*- mode: c++ -*- */
++// ----------------------------------------------------------------------------
++// Galois GR Graph Construction Routines
++// Copyright (c) 2016 The University of Texas at Austin
++// ----------------------------------------------------------------------------
++
++#pragma once
++
++#include <math.h>
++#include <time.h>
++#include <stdio.h>
++#include <libgen.h>
++#include <iostream>
++#include <set>
++
++#include <gunrock/graphio/utils.cuh>
++
++namespace gunrock {
++namespace graphio {
++/**
++ * @brief read in graph function read in graph according to its type.
++ *
++ * @tparam LOAD_VALUES
++ * @tparam VertexId
++ * @tparam Value
++ * @tparam SizeT
++ *
++ * @param[in] file_in    Input Galois graph file.
++ * @param[in] graph      CSR graph object to store the graph data.
++ * @param[in] undirected Is the graph undirected or not?
++ * @param[in] reversed   Whether or not the graph is inversed.
++ * @param[in] quiet     Don't print out anything to stdout
++ *
++ * \return int Whether error occurs (0 correct, 1 error)
++ */
++template <typename VertexId, typename Value, typename SizeT>
++void convert_to_csc(Csr<VertexId, Value, SizeT> &g) {
++  SizeT *counts = (SizeT *) calloc(sizeof(SizeT), g.nodes);
++  SizeT *destination_offsets = (SizeT *) calloc(sizeof(SizeT), (g.nodes + 1));
++  VertexId *source_indices = (VertexId *) calloc(sizeof(VertexId), (g.edges));
++  Value *edge_data = NULL;
++
++  if (g.edge_values) 
++    edge_data = (Value *) calloc(sizeof(Value), (g.edges));
++
++  assert(destination_offsets != NULL);
++  assert(source_indices != NULL);
++ 
++  for(VertexId i = 0; i < g.edges; i++) {
++    counts[g.column_indices[i]]++;
++  }
++  fprintf(stderr, "finished in_degree calculation\n");
++
++  destination_offsets[0] = 0;
++  for(SizeT i = 1; i < g.nodes + 1; i++) {
++    destination_offsets[i] = counts[i - 1] + destination_offsets[i - 1];
++  }
++  fprintf(stderr, "finished destination_offsets calculation\n");
++
++  assert(destination_offsets[g.nodes] == g.edges);
++
++  for(SizeT n = g.nodes - 1;; n--) {
++    for(SizeT e = g.row_offsets[n]; e < g.row_offsets[n + 1]; e++) {
++      VertexId dst = g.column_indices[e];
++
++      assert(counts[dst] > 0);
++      source_indices[destination_offsets[dst] + counts[dst] - 1] = n;
++      if(edge_data)
++        edge_data[destination_offsets[dst] + counts[dst] - 1] = g.edge_values[e];
++
++      counts[dst]--;
++    }
++    if(n == 0)
++      break;
++  }
++  fprintf(stderr, "finished source_indices calculation\n");
++
++  memcpy(g.row_offsets, destination_offsets, (g.nodes + 1) * sizeof(SizeT));
++  memcpy(g.column_indices, source_indices, g.edges * sizeof(VertexId));
++  if(edge_data)
++    memcpy(g.edge_values, edge_data, g.edges * sizeof(Value));
++
++  free(destination_offsets);
++  free(source_indices);
++  free(edge_data);
++}
++
++
++template <typename VertexId, typename Value, typename SizeT>
++size_t drop_self_loops(Csr<VertexId, Value, SizeT> &g) {
++  SizeT last_edge = 0;
++  SizeT prev_node_last_edge = 0;
++  size_t dropped = 0;
++
++  for(SizeT node = 0; node < g.nodes; node++) {    
++    for(SizeT edge = g.row_offsets[node]; edge < g.row_offsets[node + 1]; edge++) {
++      VertexId dst = g.column_indices[edge];
++
++      if(dst == node) {
++        dropped++;
++        continue;
++      }
++      
++      if(g.edge_values) 
++        g.edge_values[last_edge] = g.edge_values[edge];
++
++      g.column_indices[last_edge++] = dst;    
++    }
++    
++    if(node > 0)
++      g.row_offsets[node] = prev_node_last_edge;    
++
++    prev_node_last_edge = last_edge;
++  }
++
++  g.edges = prev_node_last_edge;
++  g.row_offsets[g.nodes] = g.edges;
++
++  return dropped;
++}
++
++template <typename VertexId, typename Value, typename SizeT>
++size_t drop_duplicate_edges(Csr<VertexId, Value, SizeT> &g) {
++  SizeT last_edge = 0;
++  SizeT prev_node_last_edge = 0;
++  size_t dropped = 0;
++
++  for(SizeT node = 0; node < g.nodes; node++) {    
++    std::set<VertexId> seen_dsts;
++
++    for(SizeT edge = g.row_offsets[node]; edge < g.row_offsets[node + 1]; edge++) {
++      VertexId dst = g.column_indices[edge];
++
++      std::pair<typename std::set<VertexId>::const_iterator, bool> x = seen_dsts.insert(dst);
++
++      if(x.second == false) {
++        dropped++;
++        continue;
++      }
++
++      if(g.edge_values) 
++        g.edge_values[last_edge] = g.edge_values[edge];
++
++      g.column_indices[last_edge++] = dst;    
++    }
++    
++    if(node > 0)
++      g.row_offsets[node] = prev_node_last_edge;    
++
++    prev_node_last_edge = last_edge;
++  }
++
++  g.edges = prev_node_last_edge;
++  g.row_offsets[g.nodes] = g.edges;
++  return dropped;
++}
++
++
++template <bool LOAD_VALUES, typename VertexId, typename Value, typename SizeT>
++int BuildGaloisGraph(
++    char *file_in,
++    Csr<VertexId, Value, SizeT> &graph,
++    bool undirected,
++    bool reversed,
++    bool quiet = false)
++{   
++  FILE *f = fopen(file_in, "r");
++
++  if(!quiet)
++    fprintf(stderr, "undirected = %d, reversed = %d\n", undirected, reversed);
++
++  if(f) {
++    size_t read;
++    uint64_t x[4];
++    if(fread(x, sizeof(uint64_t), 4, f) != 4) {
++      perror("Unable to read header\n");
++      return -1;
++    }
++
++    if(x[0] != 1) /* version */ {
++      perror("Unknown file version\n"); 
++      return -1;      
++    }
++
++    uint64_t sizeEdgeTy = le64toh(x[1]);
++    size_t nvtxs = x[2];
++    size_t nedges = x[3];
++    
++    if(!quiet)
++      fprintf(stderr, "%s has %d nodes and %d edges\n", file_in, nvtxs, nedges);
++
++    if(LOAD_VALUES && sizeEdgeTy == 0) {
++      perror("Graph has no edge data\n");
++      return -1;
++    }
++
++    graph.template FromScratch<LOAD_VALUES, false>(nvtxs, nedges);
++
++    assert(graph.row_offsets != NULL);
++    assert(graph.column_indices != NULL);
++
++    if(LOAD_VALUES) {
++      assert(graph.edge_values != NULL);
++    }
++    
++    if(sizeof(graph.row_offsets[0]) == sizeof(uint64_t)) {
++      read = fread(graph.row_offsets + 1, sizeof(uint64_t), nvtxs, f); // Little-endian data
++      if(read < nvtxs)  {
++        perror("Error: Partial read of node data\n");
++        return -1;
++      }
++    } else {
++      for(int i = 0; i < nvtxs; i++) {
++        uint64_t rs;
++        if(fread(&rs, sizeof(uint64_t), 1, f) != 1) {
++          perror("Error: Unable to read node data\n");
++          return -1;
++        }
++        graph.row_offsets[i + 1] = rs;
++      }
++    }
++    if(!quiet)
++      fprintf(stderr, "read %llu nodes\n", graph.nodes);
++    
++    // edges are 32-bit
++
++    if(sizeof(graph.column_indices[0]) == sizeof(uint32_t)) {
++      read = fread(graph.column_indices, sizeof(uint32_t), graph.edges, f); // Little-endian data
++      if(read < graph.edges)  {
++        perror("Error: Partial read of edge destinations\n");  
++        return -1;
++      }
++
++      if(!quiet)
++        fprintf(stderr, "read %llu edges\n", graph.edges);
++
++    } else {
++      assert(false && "Not implemented"); /* need to convert sizes when reading */
++    }
++
++    if(sizeEdgeTy && LOAD_VALUES) {
++      if(graph.edges % 2)
++        if(fseek(f, 4, SEEK_CUR) != 0) {  // skip 
++          perror("Error when seeking\n"); 
++          return -1;
++        }
++      
++      if(sizeof(graph.edge_values[0]) == sizeof(uint32_t)) {
++        read = fread(graph.edge_values, sizeof(uint32_t), graph.edges, f); // Little-endian data
++
++        if(read < graph.edges)  {
++          perror("Error: Partial read of edge data\n");
++          return -1;
++        }
++    
++        if(!quiet)
++          fprintf(stderr, "read data for %llu edges\n", graph.edges);
++
++      } else {
++        assert(false && "Not implemented"); /* need to convert sizes when reading */
++      }
++    }
++
++    size_t dropped = 0;
++    dropped = drop_self_loops(graph);
++    fprintf(stderr, "Dropped %llu self-loops (%0.2f%%)\n", dropped, (1.0 * (dropped) / (graph.edges + dropped)) * 100.0);
++
++    dropped = drop_duplicate_edges(graph);
++    fprintf(stderr, "Dropped %llu duplicate edges (%0.2f%%)\n", dropped, (1.0 * (dropped) / (graph.edges + dropped)) * 100.0);
++    
++    if(reversed) 
++      convert_to_csc(graph);
++
++    // compute out_nodes
++    size_t out_node = 0;
++    for (size_t node = 0; node < graph.nodes; node++) {
++      if (graph.row_offsets[node + 1] - graph.row_offsets[node] > 0)
++      {
++        ++out_node;
++      }
++    }
++    graph.out_nodes = out_node;
++
++    fclose(f);
++    return 0;
++  }
++  else {
++    perror("Unable to open file");
++    return -1;
++  }
++}
++  
++}
++}

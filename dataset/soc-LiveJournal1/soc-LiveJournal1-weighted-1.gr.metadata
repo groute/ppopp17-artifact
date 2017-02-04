@@ -1,0 +1,5 @@
+bfs_prio_delta_fused=5000
+bfs_prio_delta_softprio=1000
+sssp_prio_delta_fused=1000
+sssp_prio_delta_softprio=100000
+cc_components=1876

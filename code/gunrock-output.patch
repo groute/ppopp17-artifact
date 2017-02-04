@@ -1,0 +1,187 @@
+diff --git a/tests/bfs/test_bfs.cu b/tests/bfs/test_bfs.cu
+index b1bbebe..52bad84 100644
+--- a/tests/bfs/test_bfs.cu
++++ b/tests/bfs/test_bfs.cu
+@@ -99,6 +99,7 @@ void Usage()
+         "[--jsonfile=<name>]       Output JSON-format statistics to file <name>\n"
+         "[--jsondir=<dir>]         Output JSON-format statistics to <dir>/name,\n"
+         "                          where name is auto-generated.\n"
++        "[--output=<name>]         Write output to file <name>\n"
+     );
+ }
+ 
+@@ -151,6 +152,63 @@ void DisplaySolution(
+     printf("]\n");
+ }
+ 
++/**
++ * @brief Writes the BFS result (i.e., distance from source) to file
++ *
++ * @tparam VertexId
++ * @tparam SizeT
++ * @tparam MARK_PREDECESSORS
++ * @tparam ENABLE_IDEMPOTENCE
++ *
++ * @param[in] ofname    Output file name
++ * @param[in] labels    Search depth from the source for each node.
++ * @param[in] preds     Predecessor node id for each node.
++ * @param[in] num_nodes Number of nodes in the graph.
++ * @param[in] inf       Value of infinity
++ * @param[in] quiet     Don't print out anything to stdout
++ */
++template <
++    typename VertexId,
++    typename SizeT,
++    bool MARK_PREDECESSORS,
++    bool ENABLE_IDEMPOTENCE >
++void WriteSolution(
++    const char *ofname,
++    VertexId *labels,
++    VertexId *preds,
++    SizeT     num_nodes,
++    VertexId inf,
++    bool quiet = false)
++{
++    if (quiet) { return; }
++    // careful: if later code in this
++    // function changes something, this
++    // return is the wrong thing to do
++
++    FILE *output = fopen(ofname, "w");
++    
++    if(output) {
++	for (VertexId i = 0; i < num_nodes; ++i)
++	    {
++		if(labels[i] == inf) {
++		    if(fprintf(output, "%u INF\n", i) < 0) {
++			fprintf(stderr, "Output error!\n");
++			break;
++		    }
++		} else {
++		    if(fprintf(output, "%u %u\n", i, labels[i]) < 0) {
++			fprintf(stderr, "Output error!\n");
++			break;
++		    }
++		}
++	    }
++	fclose(output);
++    } else {
++	fprintf(stderr, "Unable to open output file %s!\n", ofname);
++    }
++}
++
++
+ /******************************************************************************
+  * BFS Testing Routines
+  *****************************************************************************/
+@@ -465,6 +523,12 @@ void RunTests(Info<VertexId, Value, SizeT> *info)
+         (h_labels, h_preds, graph->nodes, quiet_mode);
+     }
+ 
++    if(!info->info["output"].get_str().empty()) {
++	WriteSolution<VertexId, SizeT, MARK_PREDECESSORS, ENABLE_IDEMPOTENCE>
++	    (info->info["output"].get_str().c_str(), h_labels, h_preds, graph->nodes, 
++	     util::MaxValue<VertexId>() - 1, quiet_mode);
++    }
++
+     info->ComputeTraversalStats(  // compute running statistics
+         enactor->enactor_stats.GetPointer(), elapsed, h_labels);
+ 
+@@ -732,6 +796,14 @@ int main(int argc, char** argv)
+     // graph construction or generation related parameters
+     info->info["undirected"] = args.CheckCmdLineFlag("undirected");
+ 
++    info->info["output"] = "";
++    if(args.CheckCmdLineFlag("output")) {
++	std::string x;
++	args.GetCmdLineArgument("output", x);
++	info->info["output"] = x;
++	fprintf(stderr, "Using output file: %s\n", x.c_str() );
++    }
++
+     info->Init("BFS", args, csr);  // initialize Info structure
+     RunTests_instrumented<VertexId, Value, SizeT>(info);  // run test
+ 
+diff --git a/tests/sssp/test_sssp.cu b/tests/sssp/test_sssp.cu
+index bc0f534..242b525 100644
+--- a/tests/sssp/test_sssp.cu
++++ b/tests/sssp/test_sssp.cu
+@@ -106,6 +106,7 @@ void Usage()
+         "[--jsonfile=<name>]       Output JSON-format statistics to file <name>\n"
+         "[--jsondir=<dir>]         Output JSON-format statistics to <dir>/name,\n"
+         "                          where name is auto-generated.\n"
++        "[--output=<name>]         Write output to file <name>\n"
+     );
+ }
+ 
+@@ -134,6 +135,43 @@ void DisplaySolution (VertexId *source_path, SizeT num_nodes)
+     printf("]\n");
+ }
+ 
++/**
++ * @brief Writes the SSSP result (i.e., distance from source)
++ *
++ * @tparam VertexId
++ * @tparam SizeT
++ *
++ * @param[in] ofname     Output file name
++ * @param[in] source_path Search depth from the source for each node.
++ * @param[in] num_nodes Number of nodes in the graph.
++ * @param[in] inf  The infinity value
++ */
++template<typename VertexId, typename SizeT>
++void WriteSolution (const char *ofname, VertexId *source_path, SizeT num_nodes, VertexId inf)
++{
++    FILE *output = fopen(ofname, "w");
++
++    if(output) {
++	for (VertexId i = 0; i < num_nodes; ++i)
++	    {
++		if(source_path[i] == inf) {
++		    if(fprintf(output, "%u INF\n", i) < 0) {
++			fprintf(stderr, "Output error!\n");
++			break;
++		    }
++		} else {
++		    if(fprintf(output, "%u %u\n", i, source_path[i]) < 0) {
++			fprintf(stderr, "Output error!\n");
++			break;
++		    }
++		}
++	    }
++	fclose(output);
++    } else {
++	fprintf(stderr, "Unable to open output file %s!\n", ofname);
++    }
++}
++
+ /******************************************************************************
+  * SSSP Testing Routines
+  *****************************************************************************/
+@@ -444,6 +482,11 @@ void RunTests(Info<VertexId, Value, SizeT> *info)
+         }
+     }
+ 
++    if(!info->info["output"].get_str().empty()) {
++	WriteSolution(info->info["output"].get_str().c_str(), h_labels, graph->nodes, util::MaxValue<Value>());
++    }
++
++
+     info->ComputeTraversalStats(  // compute running statistics
+         enactor->enactor_stats.GetPointer(), elapsed, h_labels);
+ 
+@@ -657,6 +700,14 @@ int main(int argc, char** argv)
+     info->info["undirected"] = args.CheckCmdLineFlag("undirected");
+     info->info["edge_value"] = true;  // require per edge weight values
+ 
++    info->info["output"] = "";
++    if(args.CheckCmdLineFlag("output")) {
++	std::string x;
++	args.GetCmdLineArgument("output", x);
++	info->info["output"] = x;
++	fprintf(stderr, "Using output file: %s\n", x.c_str() );
++    }
++
+     info->Init("SSSP", args, csr);  // initialize Info structure
+     RunTests_instrumented<VertexId, Value, SizeT>(info);  // run test
+ 

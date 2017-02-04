@@ -1,0 +1,6 @@
+*~
+*.csv
+*.log
+*.exists
+*.patched
+setup.complete

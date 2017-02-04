@@ -1,0 +1,6 @@
+use_metis="-nopn"
+bfs_prio_delta_fused=1
+bfs_prio_delta_softprio=1
+sssp_prio_delta_fused=30
+sssp_prio_delta_softprio=30
+cc_components=553159
